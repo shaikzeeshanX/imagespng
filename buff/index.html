@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Tilted Grid Hero</title>
+<style>
+  :root {
+    --background: #efdcdc;
+    --foreground: #0a0a0a;
+    --muted: #f4f4f5;
+    --muted-foreground: #71717a;
+    --border: #f1f1eb;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    padding: 24px;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--background);
+    color: var(--foreground);
+  }
+
+  /* ── Hero container ─────────────────────────────── */
+  .tgh {
+    position: relative;
+    overflow: hidden;
+    width: 100%;
+    height: 560px;
+    container-type: size;
+    border: 1px solid var(--border);
+    border-radius: 0.5rem;
+    background: var(--background);
+  }
+
+  /* ── The curved band ────────────────────────────── */
+  .tgh-band {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.5s;
+  }
+  .tgh-band.is-ready { opacity: 1; }
+
+  .tgh-tile { position: absolute; }
+
+  /* Gradient behind each strip, visible if an image fails to load */
+  .tgh-strip {
+    position: absolute;
+    top: 0;
+    overflow: hidden;
+    background: linear-gradient(135deg, #0d1229 0%, #c47ea5 50%, #fde68a 100%);
+  }
+  .tgh-strip.is-first {
+    border-top-left-radius: 0.5rem;
+    border-bottom-left-radius: 0.5rem;
+  }
+  .tgh-strip.is-last {
+    border-top-right-radius: 0.5rem;
+    border-bottom-right-radius: 0.5rem;
+  }
+
+  .tgh-strip img {
+    position: absolute;
+    top: 0;
+    max-width: none;
+    object-fit: cover;
+    user-select: none;
+    -webkit-user-drag: none;
+  }
+
+  /* ── Content above the band ─────────────────────── */
+  .tgh-content {
+    position: relative;
+    z-index: 10;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: space-between;
+    padding: 3rem 0;
+    text-align: center;
+  }
+  .tgh-content h1 {
+    margin: 0;
+    padding: 0 1.5rem;
+    font-size: 2.25rem;
+    font-weight: 500;
+    letter-spacing: -0.025em;
+    line-height: 1.15;
+    text-wrap: balance;
+    color: var(--foreground);
+  }
+  @media (min-width: 640px) {
+    .tgh-content h1 { font-size: 3rem; }
+  }
+  .tgh-content p {
+    max-width: 28rem;
+    margin: 0;
+    padding: 0 1.5rem;
+    font-size: 0.875rem;
+    line-height: 1.5;
+    text-wrap: balance;
+    color: var(--muted-foreground);
+  }
+</style>
+</head>
+<body>
+
+<section id="hero" class="tgh">
+  <div class="tgh-content">
+    <h1>WELCOME BACK ZEESHAN<br />مرحباً ذيشان، كيف يسير تطويرك؟ </h1>
+    <p>مرحباً ذيشان، كيف يسير تطويرك؟ gracius`</p>
+  </div>
+</section>
+
+<script>
+(() => {
+  // ── Constants ────────────────────────────────────
+  const SLICES = 16;     // vertical strips per tile
+  const CAMERA = 1.6;    // camera distance as a multiple of the cylinder radius
+  const MAX_WIDTH = 55;  // max tile width, as % of hero width
+
+  /** Cylinder radius (as a share of hero width) that puts the edge `bend` radians round the arc. */
+  function arc(bend) {
+    return (CAMERA - 1 + Math.cos(bend)) / (2 * CAMERA * Math.sin(bend));
+  }
+
+  /** Lays the loop on the cylinder. Angles are returned in degrees. */
+  function measure(width, height, tile, aspect, gap, bend) {
+    const h = Math.min((tile / 100) * height, ((MAX_WIDTH / 100) * width) / aspect);
+    const radius = width * arc(bend);
+    if (!(h > 0) || !(radius > 0)) return { columns: 2, sweep: 0, unit: 0, limit: 0 };
+
+    const deg = (rad) => (rad * 180) / Math.PI;
+    const unit = deg(h / radius);
+    const pitch = (aspect + gap / 100) * unit;
+    const limit = deg(bend) + (aspect * unit) / 2;
+    const columns = Math.min(60, Math.max(2, Math.ceil((2 * limit) / pitch)));
+    const round = (n) => +n.toFixed(4);
+    const sweep = round((columns * pitch) / 2);
+
+    return { columns, sweep, unit: round(unit), limit: round(Math.min(sweep, limit)) };
+  }
+
+  let uid = 0;
+
+  class TiltedGridHero {
+    constructor(root, options = {}) {
+      this.root = root;
+      this.o = {
+        images: [],
+        speed: 4,
+        tileHeight: 26,
+        aspectRatio: 16 / 9,
+        gap: 6,
+        axis: 56,
+        curve: 80,
+        fade: 12,
+        ...options,
+      };
+
+      const id = `tgh${++uid}`;
+      this.orbit = `${id}-orbit`;
+      this.tileClass = `${id}-tile`;
+      this.bend = (Math.min(85, Math.max(5, this.o.curve)) * Math.PI) / 180;
+      this.shown = {};   // tile index -> position in the image run
+      this.layout = null;
+
+      this.band = document.createElement("div");
+      this.band.className = "tgh-band";
+      this.band.setAttribute("aria-hidden", "true");
+      root.prepend(this.band);
+
+      this.style = document.createElement("style");
+      document.head.appendChild(this.style);
+
+      // Preload every image in the background so tiles rarely wait on a load.
+      this.o.images.forEach(({ src }) => { new Image().src = src; });
+
+      this.ro = new ResizeObserver(([entry]) => this.onResize(entry.contentRect));
+      this.ro.observe(root);
+    }
+
+    /** Length in multiples of the tile height, capped by MAX_WIDTH on narrow screens. */
+    u(n) {
+      const { tileHeight, aspectRatio } = this.o;
+      return `calc(${+n.toFixed(4)} * min(${tileHeight}cqh, ${+(MAX_WIDTH / aspectRatio).toFixed(4)}cqw))`;
+    }
+
+    /** Out to the axis, round it, back in: places a box on the cylinder at angle `deg`. */
+    turn(deg) {
+      const r = `${+(100 * arc(this.bend)).toFixed(3)}cqw`;
+      return `translateZ(${r}) rotateY(${+deg.toFixed(4)}deg) translateZ(-${r})`;
+    }
+
+    onResize(rect) {
+      const { tileHeight, aspectRatio, gap } = this.o;
+      const next = measure(rect.width, rect.height, tileHeight, aspectRatio, gap, this.bend);
+      const p = this.layout;
+      if (p && p.columns === next.columns && p.sweep === next.sweep && p.unit === next.unit) return;
+      this.layout = next;
+      this.render();
+    }
+
+    /** Puts an image into every strip of a tile. */
+    fill(tile, img) {
+      if (!img) return;
+      tile.querySelectorAll("img").forEach((im, k) => {
+        im.src = img.src;
+        im.alt = k === 0 ? (img.alt || "") : "";
+      });
+    }
+
+    render() {
+      const { images, speed, aspectRatio, axis, fade, tileHeight, gap } = this.o;
+      const { columns, sweep, unit, limit } =
+        this.layout || measure(1200, 560, tileHeight, aspectRatio, gap, this.bend);
+
+      const r = 100 * arc(this.bend);
+      const hide = +(((sweep - limit) / (2 * sweep || 1)) * 100).toFixed(4);
+      const duration = columns * speed;
+
+      // Per-instance keyframes: one rotateY sweep, hidden at the ends.
+      this.style.textContent =
+        `@keyframes ${this.orbit}{from{transform:${this.turn(-sweep)}}to{transform:${this.turn(sweep)}}` +
+        `0%,${hide}%,${100 - hide}%,100%{visibility:hidden}` +
+        `${hide + 0.001}%,${100 - hide - 0.001}%{visibility:visible}}` +
+        `@media (prefers-reduced-motion:reduce){.${this.tileClass}{animation-play-state:paused}}`;
+
+      // Band perspective and edge fade
+      this.band.style.perspective = `${+(r * CAMERA).toFixed(3)}cqw`;
+      this.band.style.perspectiveOrigin = `50% ${axis}%`;
+      const mask = `linear-gradient(90deg,transparent,#000 ${fade}%,#000 ${100 - fade}%,transparent)`;
+      this.band.style.maskImage = mask;
+      this.band.style.webkitMaskImage = mask;
+      this.band.classList.toggle("is-ready", !!this.layout);
+
+      // Rebuild tiles. Current image positions are kept, so a resize never swaps an image on screen.
+      this.band.textContent = "";
+      const share = aspectRatio / SLICES;
+
+      for (let t = 0; t < columns; t++) {
+        // Tile columns-1 starts nearest the exit, tile 0 furthest back.
+        const first = columns - 1 - t;
+        const cur = this.shown[t] ?? first;
+        const img = images.length ? images[cur % images.length] : null;
+
+        const tile = document.createElement("div");
+        tile.className = `tgh-tile ${this.tileClass}`;
+        Object.assign(tile.style, {
+          left: `calc(50% - ${this.u(aspectRatio / 2)})`,
+          top: `calc(${axis}% - ${this.u(0.5)})`,
+          width: this.u(aspectRatio),
+          height: this.u(1),
+          transformStyle: "preserve-3d",
+          animation: `${this.orbit} ${duration}s linear ${-t * speed}s infinite`,
+        });
+
+        // When a tile wraps (out of sight), hand it its next image.
+        tile.addEventListener("animationiteration", (e) => {
+          const lap = Math.round(e.elapsedTime / duration);
+          const next = lap * columns + first;
+          if (this.shown[t] === next) return;
+          this.shown[t] = next;
+          const nextImg = images.length ? images[next % images.length] : null;
+          this.fill(tile, nextImg);
+        });
+
+        // Build the SLICES facets of this tile.
+        for (let k = 0; k < SLICES; k++) {
+          const strip = document.createElement("div");
+          strip.className =
+            "tgh-strip" +
+            (k === 0 ? " is-first" : "") +
+            (k === SLICES - 1 ? " is-last" : "");
+
+          Object.assign(strip.style, {
+            left: this.u((aspectRatio - share) / 2),
+            // A pixel wider than its share so neighbouring facets overlap, except the last.
+            width: k === SLICES - 1 ? this.u(share) : `calc(${this.u(share)} + 1px)`,
+            height: this.u(1),
+            transform: this.turn((aspectRatio / 2 - (k + 0.5) * share) * unit),
+          });
+
+          const im = document.createElement("img");
+          im.draggable = false;
+          im.alt = "";
+          im.referrerPolicy = "no-referrer";   // helps image CDNs such as gstatic respond
+          im.loading = "lazy";
+          Object.assign(im.style, {
+            left: this.u(-k * share),
+            width: this.u(aspectRatio),
+            height: this.u(1),
+          });
+          // If an image fails, hide it so the strip's gradient shows instead.
+          im.addEventListener("error", () => { im.style.visibility = "hidden"; });
+          im.addEventListener("load", () => { im.style.visibility = "visible"; });
+
+          strip.appendChild(im);
+          tile.appendChild(strip);
+        }
+
+        this.fill(tile, img);
+        this.band.appendChild(tile);
+      }
+    }
+
+    destroy() {
+      this.ro.disconnect();
+      this.style.remove();
+      this.band.remove();
+    }
+  }
+
+  // ── Usage ────────────────────────────────────────
+  // Replace each alt with a short description of its image.
+  const images = [
+    { src: "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcS3FLWyjhSuyg1dbC5cAzt2jJsj6ISYNqEkHRmgGbdYOg&s=10", alt: "Photo 1" },
+    { src: "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSd-bKYjBUxNa3xk7toSDeb6nekoR2U1cRN00qAPK6xfg&s=10", alt: "Photo 2" },
+    { src: "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcTXQaaorpmw5yRCCEp_M4SfVxhg0XPTcFi_q8qxBNFDmQ&s=10", alt: "Photo 3" },
+    { src: "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcTySP8Y1Gns77SOx8d25U7_suDpgNJ2XgjwmiuSj1T_RQ&s=10", alt: "Photo 4" },
+    { src: "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSGzM3WyLeXAShYIrjxPpzG5jx0RplYtbXY0w1IaUz5ew&s=10", alt: "Photo 5" },
+    { src: "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcRUOXZ9gP0e8QMq88yOHtUJxGWWXuVSsZIK8J61XoWWbw&s=10", alt: "Photo 6" },
+  ];
+
+  new TiltedGridHero(document.getElementById("hero"), {
+    images,
+    speed: 4,         // seconds per tile advance
+    tileHeight: 26,   // % of hero height
+    aspectRatio: 16 / 9,
+    gap: 6,           // % of tile height
+    axis: 56,         // vertical centre of the row, % of hero height
+    curve: 80,        // bend in degrees (5–85)
+    fade: 12,         // edge fade width, % of hero width
+  });
+})();
+</script>
+
+</body>
+</html>
